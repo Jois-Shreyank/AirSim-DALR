@@ -8,7 +8,7 @@ RUN     apt-get update &&\
         ros-$ROS_DISTRO-vision-opencv ros-$ROS_DISTRO-image-transport \
         ros-$ROS_DISTRO-rqt ros-$ROS_DISTRO-rqt-common-plugins \
         ros-$ROS_DISTRO-rqt-graph ros-$ROS_DISTRO-rqt-console ros-$ROS_DISTRO-rqt-tf-tree \
-        ros-$ROS_DISTRO-rosbridge-server \
+        ros-$ROS_DISTRO-rosbridge-server ros-$ROS_DISTRO-rviz2 \
         libyaml-cpp-dev &&\
         echo 'source /opt/ros/$ROS_DISTRO/setup.bash' >> ~/.bashrc &&\
         rm -rf /var/lib/apt/lists/* &&\
