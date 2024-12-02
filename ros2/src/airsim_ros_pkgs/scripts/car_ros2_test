@@ -1,0 +1,111 @@
+#!/usr/bin/env python3
+
+import rclpy
+from rclpy.node import Node
+
+from sensor_msgs.msg import Joy
+from airsim_interfaces.msg import CarControls
+
+from rclpy.qos import QoSProfile, ReliabilityPolicy, DurabilityPolicy
+from rclpy.duration import Duration
+
+
+class SimpleCarJoyNode(Node):
+    def __init__(self):
+        super().__init__('simple_car_joy_node')
+
+        # Create QoS profile for the joystick subscription
+        # Matching the publisher's QoS settings
+        joy_qos_profile = QoSProfile(
+            reliability=ReliabilityPolicy.RELIABLE,
+            durability=DurabilityPolicy.TRANSIENT_LOCAL,
+            depth=10
+        )
+        joy_qos_profile.lifespan = Duration(nanoseconds=1000000000)  # 1 second
+
+        # Create the joystick subscriber
+        self.joy_sub = self.create_subscription(
+            Joy,
+            '/exomy/joy',
+            self.joy_callback,
+            qos_profile=joy_qos_profile
+        )
+
+        # Create the car controls publisher
+        self.car_cmd_pub = self.create_publisher(
+            CarControls,
+            '/airsim_node/Car_1/car_cmd',
+            10
+        )
+
+        # Store the latest joystick message
+        self.joy_msg = None
+
+        # Create a timer to periodically publish car control commands
+        self.timer = self.create_timer(0.05, self.publish_car_controls)  # 20 Hz
+
+    def joy_callback(self, msg):
+        self.get_logger().info('Received joystick message.')
+        self.joy_msg = msg
+
+    def publish_car_controls(self):
+        if self.joy_msg is None:
+            self.get_logger().info('No joystick message received yet.')
+            return
+
+        controls = CarControls()
+        joy = self.joy_msg
+
+        # Map joystick axes to car controls
+        # Adjust these indices based on your joystick configuration
+        # For example:
+        # joy.axes[0]: Left stick horizontal (steering)
+        # joy.axes[1]: Left stick vertical (throttle/brake)
+
+        # Steering
+        controls.steering = -joy.axes[0] # Adjust if necessary
+
+        # Throttle and Brake
+        throttle_brake = joy.axes[1]  # Adjust if necessary
+        if throttle_brake > 0.0:
+            # Forward
+            controls.throttle = throttle_brake
+            controls.brake = 0.0
+            controls.manual = True
+            controls.manual_gear = 1
+            controls.gear_immediate = True
+        elif throttle_brake < 0.0:
+            # Reverse
+            controls.throttle = -throttle_brake  # Make positive
+            controls.brake = 0.0
+            controls.manual = True
+            controls.manual_gear = -1
+            controls.gear_immediate = True
+        else:
+            # Brake
+            controls.throttle = 0.0
+            controls.brake = 1.0
+            controls.manual = False
+
+        # Header timestamp
+        controls.header.stamp = self.get_clock().now().to_msg()
+
+        # Publish the car controls
+        self.car_cmd_pub.publish(controls)
+        self.get_logger().info(f'Published car controls: {controls}')
+
+
+def main(args=None):
+    rclpy.init(args=args)
+    node = SimpleCarJoyNode()
+    try:
+        rclpy.spin(node)
+    except KeyboardInterrupt:
+        node.get_logger().info('Shutting down simple car joy node.')
+    finally:
+        node.destroy_node()
+        rclpy.shutdown()
+
+
+if __name__ == '__main__':
+    main()

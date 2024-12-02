@@ -1,0 +1,182 @@
+#!/usr/bin/env python3
+
+# Capture joystick events using ROS2 and convert them to AirSim Car API commands
+# To enable:
+# ros2 run joy joy_node
+import os
+import sys
+import threading
+from tkinter import Tk, Listbox, Button, Label, StringVar
+
+import rclpy
+from rclpy.node import Node
+from sensor_msgs.msg import Joy
+from airsim_interfaces.msg import CarControls
+
+# Add the AirSim PythonClient directory to the Python path
+airsim_path = os.path.expanduser("/home/execo/Airsim/PythonClient")
+if airsim_path not in sys.path:
+    sys.path.append(airsim_path)
+
+import airsim
+
+
+class CarCommandTranslatorGUI(Node):
+    def __init__(self):
+        super().__init__('car_joy_gui')
+
+        self.lock = threading.Lock()
+        self.available_cars = []  # List of available vehicles
+        self.vehicle_publishers = {}  # Dictionary to store publishers for each vehicle
+        self.current_car_name = None  # Current selected car (as a string)
+
+        self.declare_parameter('update_rate_hz', 20.0)
+        self.declare_parameter('steer_sign', -1)
+        self.declare_parameter('throttle_brake_sign', 1)
+
+        self.update_rate_hz = self.get_parameter('update_rate_hz').value
+        self.steer_sign = self.get_parameter('steer_sign').value
+        self.throttle_brake_sign = self.get_parameter('throttle_brake_sign').value
+
+        self.joy_msg = None
+
+        self.joy_sub = self.create_subscription(
+            Joy,
+            '/exomy/joy',
+            self.handle_joy,
+            10
+        )
+
+        # Timer for updating car control commands
+        self.create_timer(1.0 / self.update_rate_hz, self.handle_update_timer)
+
+        # AirSim client for vehicle detection
+        self.airsim_client = airsim.VehicleClient(ip="172.24.176.1")
+        self.airsim_client.confirmConnection()
+
+        # Fetch vehicles once during initialization
+        self.detect_vehicles_once()
+
+        # Start the GUI in a separate thread
+        self.gui_thread = threading.Thread(target=self.start_gui)
+        self.gui_thread.daemon = True
+        self.gui_thread.start()
+
+    def detect_vehicles_once(self):
+        """Fetch the list of vehicles from AirSim once."""
+        try:
+            vehicles = self.airsim_client.listVehicles()
+            if vehicles:
+                with self.lock:
+                    self.available_cars = vehicles
+                    self.get_logger().info(f"Detected vehicles: {self.available_cars}")
+                    self.initialize_publishers()
+                    # Set the default current car
+                    self.current_car_name = self.available_cars[0]
+            else:
+                self.get_logger().warn("No vehicles detected.")
+        except Exception as e:
+            self.get_logger().error(f"Error detecting vehicles: {e}")
+
+    def initialize_publishers(self):
+        """Initialize publishers for all detected vehicles."""
+        for vehicle in self.available_cars:
+            if vehicle not in self.vehicle_publishers:
+                topic = f"/airsim_node/{vehicle}/car_cmd"
+                self.vehicle_publishers[vehicle] = self.create_publisher(CarControls, topic, 10)
+                self.get_logger().info(f"Initialized publisher for {vehicle} on topic {topic}")
+
+    def start_gui(self):
+        """Start the GUI for selecting vehicles."""
+        root = Tk()
+        root.title("Vehicle Selector")
+
+        current_car_var = StringVar(root)
+        if self.available_cars:
+            current_car_var.set(self.available_cars[0])  # Default to the first vehicle
+        else:
+            current_car_var.set('')  # Set to empty string if no vehicles are detected
+
+        Label(root, text="Available Vehicles:").pack()
+
+        listbox = Listbox(root)
+        listbox.pack()
+
+        with self.lock:
+            for car in self.available_cars:
+                listbox.insert('end', car)
+
+        def switch_vehicle():
+            """Switch to the selected vehicle."""
+            selected = listbox.curselection()
+            if selected:
+                with self.lock:
+                    selected_car = self.available_cars[selected[0]]
+                    self.current_car_name = selected_car  # Update the current car name
+                    current_car_var.set(selected_car)     # Update GUI display
+                    self.get_logger().info(f"Switched to {selected_car}")
+
+        Button(root, text="Switch Vehicle", command=switch_vehicle).pack()
+        Label(root, textvariable=current_car_var).pack()
+
+        root.mainloop()
+
+    def handle_joy(self, msg):
+        """Store joystick message."""
+        with self.lock:
+            self.joy_msg = msg
+
+    def handle_update_timer(self):
+        """Publish car control commands based on joystick input."""
+        with self.lock:
+            joy = self.joy_msg
+            current_car = self.current_car_name
+
+        if joy is None or current_car not in self.publishers:
+            self.get_logger().info("No joystick input or invalid current car.")
+            return
+
+        controls = CarControls()
+
+        # Steering
+        controls.steering = self.steer_sign * joy.axes[0]
+
+        # Throttle/Brake and Gear Logic
+        throttle_brake = joy.axes[1] * self.throttle_brake_sign
+        if throttle_brake > 0.0:
+            controls.throttle = throttle_brake
+            controls.brake = 0.0
+            controls.gear_immediate = True
+            controls.manual_gear = 1
+            controls.manual = True
+        elif throttle_brake < 0.0:
+            controls.throttle = abs(throttle_brake)
+            controls.brake = 0.0
+            controls.gear_immediate = True
+            controls.manual_gear = -1
+            controls.manual = True
+        else:
+            controls.throttle = 0.0
+            controls.brake = 1.0
+            controls.gear_immediate = False
+
+        controls.header.stamp = self.get_clock().now().to_msg()
+
+        self.vehicle_publishers[current_car].publish(controls)
+        self.get_logger().info(f"Published controls to {current_car}: {controls}")
+
+
+def main(args=None):
+    rclpy.init(args=args)
+    node = CarCommandTranslatorGUI()
+    try:
+        rclpy.spin(node)
+    except KeyboardInterrupt:
+        node.get_logger().info("Shutting down GUI node.")
+    finally:
+        node.destroy_node()
+        rclpy.shutdown()
+
+
+if __name__ == '__main__':
+    main()
