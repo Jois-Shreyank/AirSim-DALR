@@ -5,14 +5,15 @@
 #include <map>
 #include <vector>
 #include <string>
+#include <regex>
+#include <set>
 
 class MultiCarJoyController : public rclcpp::Node {
 public:
     MultiCarJoyController()
         : Node("multi_car_joy_controller") {
-        // Declare and get the parameter for vehicle names
-        this->declare_parameter<std::vector<std::string>>("vehicle_names", {"Car_1", "Car_2", "Car_3"});
-        this->get_parameter("vehicle_names", vehicle_names_);
+        // Dynamically populate vehicle names based on ROS topics
+        populate_vehicle_names();
 
         // Initialize publishers and subscribers for each vehicle
         for (const auto& vehicle : vehicle_names_) {
@@ -35,6 +36,27 @@ public:
     }
 
 private:
+    void populate_vehicle_names() {
+        auto topic_names_and_types = this->get_topic_names_and_types();
+        std::regex vehicle_regex("^/airsim_node/(Car\\d+)/.*");
+        std::set<std::string> vehicle_names_set;
+
+        for (const auto& [topic_name, _] : topic_names_and_types) {
+            std::smatch match;
+            if (std::regex_match(topic_name, match, vehicle_regex)) {
+                if (match.size() > 1) {
+                    vehicle_names_set.insert(match[1].str());
+                }
+            }
+        }
+
+        vehicle_names_ = std::vector<std::string>(vehicle_names_set.begin(), vehicle_names_set.end());
+        RCLCPP_INFO(this->get_logger(), "Detected vehicle names:");
+        for (const auto& vehicle : vehicle_names_) {
+            RCLCPP_INFO(this->get_logger(), "- %s", vehicle.c_str());
+        }
+    }
+
     void joy_callback(const sensor_msgs::msg::Joy::SharedPtr joy_msg, const std::string& vehicle) {
         auto controls = airsim_interfaces::msg::CarControls();
 

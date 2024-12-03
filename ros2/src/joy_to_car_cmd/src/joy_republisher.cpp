@@ -9,15 +9,15 @@
 #include <thread>
 #include <mutex>
 #include <condition_variable>
+#include <regex>
 
 class JoyRepublisher : public rclcpp::Node {
 public:
     JoyRepublisher()
         : Node("joy_republisher"),
           current_car_name_("") {
-        // Get the list of available cars from parameters
-        this->declare_parameter<std::vector<std::string>>("available_cars", {"Car_1", "Car_2", "Car_3"});
-        this->get_parameter("available_cars", available_cars_);
+        // Dynamically populate available cars based on ROS topics
+        populate_available_cars();
 
         // Initialize joystick publishers for each car
         for (const auto& car : available_cars_) {
@@ -49,6 +49,27 @@ public:
     }
 
 private:
+    void populate_available_cars() {
+        auto topic_names_and_types = this->get_topic_names_and_types();
+        std::regex car_regex("^/airsim_node/(Car\\d+)/.*");
+        std::set<std::string> car_names_set;
+
+        for (const auto& [topic_name, _] : topic_names_and_types) {
+            std::smatch match;
+            if (std::regex_match(topic_name, match, car_regex)) {
+                if (match.size() > 1) {
+                    car_names_set.insert(match[1].str());
+                }
+            }
+        }
+
+        available_cars_ = std::vector<std::string>(car_names_set.begin(), car_names_set.end());
+        RCLCPP_INFO(this->get_logger(), "Available cars populated:");
+        for (const auto& car : available_cars_) {
+            RCLCPP_INFO(this->get_logger(), "- %s", car.c_str());
+        }
+    }
+
     void start_gui() {
         while (rclcpp::ok()) {
             std::cout << "\nAvailable cars:\n";
