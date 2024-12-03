@@ -1,5 +1,6 @@
 #include "rclcpp/rclcpp.hpp"
 #include "sensor_msgs/msg/joy.hpp"
+#include "sensor_msgs/msg/image.hpp"
 
 #include <iostream>
 #include <string>
@@ -18,13 +19,17 @@ public:
         this->declare_parameter<std::vector<std::string>>("available_cars", {"Car_1", "Car_2", "Car_3"});
         this->get_parameter("available_cars", available_cars_);
 
-        // Initialize publishers for each car
+        // Initialize joystick publishers for each car
         for (const auto& car : available_cars_) {
-            std::string topic = "/" + car + "/joy";
-            auto publisher = this->create_publisher<sensor_msgs::msg::Joy>(topic, 10);
-            car_publishers_[car] = publisher;
-            RCLCPP_INFO(this->get_logger(), "Initialized publisher for %s on topic %s", car.c_str(), topic.c_str());
+            std::string joy_topic = "/" + car + "/joy";
+            auto joy_publisher = this->create_publisher<sensor_msgs::msg::Joy>(joy_topic, 10);
+            car_joy_publishers_[car] = joy_publisher;
+
+            RCLCPP_INFO(this->get_logger(), "Initialized joystick publisher for %s: %s", car.c_str(), joy_topic.c_str());
         }
+
+        // Initialize the single publisher for /pi_cam/image_raw
+        pi_cam_publisher_ = this->create_publisher<sensor_msgs::msg::Image>("/pi_cam/image_raw", 10);
 
         // Start the car selection thread
         gui_thread_ = std::thread(&JoyRepublisher::start_gui, this);
@@ -61,12 +66,32 @@ private:
 
             if (choice > 0 && static_cast<size_t>(choice) <= available_cars_.size()) {
                 std::lock_guard<std::mutex> lock(car_mutex_);
-                current_car_name_ = available_cars_[choice - 1];
-                RCLCPP_INFO(this->get_logger(), "Switched to %s", current_car_name_.c_str());
+                std::string selected_car = available_cars_[choice - 1];
+                if (selected_car != current_car_name_) {
+                    current_car_name_ = selected_car;
+                    RCLCPP_INFO(this->get_logger(), "Switched to %s", current_car_name_.c_str());
+                    setup_camera_subscription(current_car_name_);
+                }
             } else {
                 std::cout << "Invalid choice. Please try again.\n";
             }
         }
+    }
+
+    void setup_camera_subscription(const std::string& car_name) {
+        // Reset the previous subscription
+        if (camera_sub_) {
+            camera_sub_.reset();
+        }
+
+        // Subscribe to the selected car's camera topic
+        std::string camera_topic = "/airsim_node/" + car_name + "/camera/Scene";
+        camera_sub_ = this->create_subscription<sensor_msgs::msg::Image>(
+            camera_topic,
+            10,
+            std::bind(&JoyRepublisher::image_callback, this, std::placeholders::_1)
+        );
+        RCLCPP_INFO(this->get_logger(), "Subscribed to %s", camera_topic.c_str());
     }
 
     void joy_callback(const sensor_msgs::msg::Joy::SharedPtr msg) {
@@ -77,9 +102,9 @@ private:
             return;
         }
 
-        auto it = car_publishers_.find(current_car_name_);
-        if (it == car_publishers_.end()) {
-            RCLCPP_INFO(this->get_logger(), "No publisher for %s", current_car_name_.c_str());
+        auto it = car_joy_publishers_.find(current_car_name_);
+        if (it == car_joy_publishers_.end()) {
+            RCLCPP_INFO(this->get_logger(), "No joystick publisher for %s", current_car_name_.c_str());
             return;
         }
 
@@ -88,10 +113,26 @@ private:
         RCLCPP_INFO(this->get_logger(), "Republished joystick message to %s/joy", current_car_name_.c_str());
     }
 
+    void image_callback(const sensor_msgs::msg::Image::SharedPtr msg) {
+        std::lock_guard<std::mutex> lock(car_mutex_);
+
+        if (current_car_name_.empty()) {
+            RCLCPP_INFO(this->get_logger(), "No car selected.");
+            return;
+        }
+
+        // Publish the image message to the /pi_cam/image_raw topic
+        pi_cam_publisher_->publish(*msg);
+        RCLCPP_INFO(this->get_logger(), "Republished image message to /pi_cam/image_raw");
+    }
+
     std::vector<std::string> available_cars_;
-    std::map<std::string, rclcpp::Publisher<sensor_msgs::msg::Joy>::SharedPtr> car_publishers_;
+    std::map<std::string, rclcpp::Publisher<sensor_msgs::msg::Joy>::SharedPtr> car_joy_publishers_;
     std::string current_car_name_;
     rclcpp::Subscription<sensor_msgs::msg::Joy>::SharedPtr joy_sub_;
+    rclcpp::Subscription<sensor_msgs::msg::Image>::SharedPtr camera_sub_;
+
+    rclcpp::Publisher<sensor_msgs::msg::Image>::SharedPtr pi_cam_publisher_;
 
     std::thread gui_thread_;
     std::mutex car_mutex_;
